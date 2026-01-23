@@ -18,6 +18,11 @@ PORCENTAJE_PARTICULAS_INICIAL = 10  # Porcentaje de comida que será partículas
 NUM_DIAS = 30  # Número de días a simular (por defecto)
 TAMANO_CELDA = 20  # Tamaño de cada celda de la cuadrícula
 
+# Parámetros de STAMINA
+STAMINA_MAXIMA = 100  # Stamina máximo
+STAMINA_RECARGA_POR_COMIDA = 60  # Stamina recargado al comer
+STAMINA_AGOTAMIENTO = 1.0  # Stamina perdido por paso sin comer
+
 # Colores
 NEGRO = (20, 20, 20)
 BLANCO = (255, 255, 255)
@@ -31,8 +36,8 @@ AMARILLO = (255, 255, 0)
 CYAN = (0, 255, 255)
 # Colores por tipo de mutación
 COLOR_NORMAL = (255, 255, 255)  # Blanco - Tipo normal
-COLOR_MUTACION_VELOCIDAD = (255, 0, 0)  # Rojo - Velocidad aumentada
-COLOR_MUTACION_PRIORIDAD = (0, 255, 0)  # Verde - Prioridad para comer
+COLOR_MUTACION_VELOCIDAD = (0, 255, 0)  # Verde - Velocidad aumentada
+COLOR_MUTACION_PRIORIDAD = (255, 0, 0)  # Rojo - Prioridad para comer
 
 
 # UI simple
@@ -131,7 +136,8 @@ class Particula:
         self.color = self._obtener_color()
         
         # Velocidad: mutación de velocidad mueve más casillas por tick, mismos pasos de vida
-        self.velocidad = 2 if tipo_mutacion == "mutacion_velocidad" else 1
+        self.velocidad_base = 2 if tipo_mutacion == "mutacion_velocidad" else 1
+        self.velocidad = self.velocidad_base  # Velocidad ajustada por stamina
         self.pasos_vida = pasos_vida
         self.pasos_restantes = self.pasos_vida
         self.trayectoria = [(self.x, self.y)]
@@ -142,6 +148,10 @@ class Particula:
         self.salio_de_casa = False
         self.debe_morir = False
         self.puede_reproducirse = False
+        
+        # Sistema de STAMINA
+        self.stamina = STAMINA_MAXIMA
+        self.stamina_anterior = STAMINA_MAXIMA
     
     def _obtener_color(self):
         """Retorna el color según el tipo de mutación"""
@@ -151,6 +161,24 @@ class Particula:
             return COLOR_MUTACION_PRIORIDAD
         else:
             return COLOR_NORMAL
+    
+    def actualizar_velocidad_por_stamina(self):
+        """Ajusta la velocidad según el stamina actual"""
+        # Proporción de stamina (0 a 1)
+        proporcion_stamina = max(0, min(1, self.stamina / STAMINA_MAXIMA))
+        # La velocidad varía de 0% a 100% de la velocidad base según el stamina
+        self.velocidad = max(1, int(self.velocidad_base * proporcion_stamina))
+        if self.velocidad == 0:
+            self.velocidad = 1  # Mínimo 1 para poder moverse
+    
+    def recargar_stamina(self):
+        """Recarga el stamina al comer"""
+        self.stamina = min(STAMINA_MAXIMA, self.stamina + STAMINA_RECARGA_POR_COMIDA)
+    
+    def agotar_stamina(self, cantidad=STAMINA_AGOTAMIENTO):
+        """Reduce el stamina por no comer"""
+        self.stamina = max(0, self.stamina - cantidad)
+        self.actualizar_velocidad_por_stamina()
         
     def esta_en_borde(self, limites):
         """Verifica si la partícula está en el borde (casa)"""
@@ -170,7 +198,11 @@ class Particula:
         ]
 
         movio = False
+        # Actualizar velocidad según stamina actual
+        self.actualizar_velocidad_por_stamina()
+        
         # Mutación velocidad: realiza varios subpasos en el mismo tick
+        # Velocidad ajustada por stamina
         for _ in range(self.velocidad):
             if self.pasos_restantes <= 0 or not self.activa:
                 break
@@ -183,6 +215,11 @@ class Particula:
             self.y = nuevo_y
             self.trayectoria.append((self.x, self.y))
             self.pasos_restantes -= 1
+            
+            # Agotar stamina por cada paso realizado
+            if not self.en_casa:
+                self.agotar_stamina()
+            
             movio = True
 
             # Verificar si está en casa
@@ -200,6 +237,7 @@ class Particula:
         if (self.x, self.y) in comida_pos:
             self.veces_comido += 1
             self.ha_comido_hoy = True
+            self.recargar_stamina()  # Recargar stamina al comer
             comida_pos.remove((self.x, self.y))
             return True
         return False
@@ -217,6 +255,9 @@ class Particula:
         self.salio_de_casa = False
         self.activa = True
         self.puede_reproducirse = False
+        # Reiniciar stamina al máximo
+        self.stamina = STAMINA_MAXIMA
+        self.actualizar_velocidad_por_stamina()
     
     def obtener_tipo_hijo(self):
         """Determina el tipo de mutación del hijo basado en veces_comido del padre"""
@@ -228,10 +269,10 @@ class Particula:
             return self.tipo_mutacion
     
     def obtener_tipo_heredado(self):
-        """Si es mutado, retorna tipo heredado con 75% misma mutación, 25% normal"""
+        """Si es mutado, retorna tipo heredado con 80% misma mutación, 20% normal"""
         if self.tipo_mutacion in ["mutacion_velocidad", "mutacion_prioridad"]:
-            # 75% misma mutación, 25% normal
-            if random.random() < 0.75:
+            # 80% misma mutación, 20% normal
+            if random.random() < 0.8:
                 return self.tipo_mutacion
             else:
                 return "normal"
@@ -243,11 +284,11 @@ class Particula:
             pygame.draw.lines(pantalla, self.color, False, self.trayectoria, 1)
         
         # Dibujar la partícula
-        pygame.draw.circle(pantalla, self.color, (self.x, self.y), 4)
+        pygame.draw.circle(pantalla, self.color, (self.x, self.y), 7)
         
         # Si está en casa, dibujar un círculo alrededor
         if self.en_casa:
-            pygame.draw.circle(pantalla, VERDE, (self.x, self.y), 7, 2)
+            pygame.draw.circle(pantalla, VERDE, (self.x, self.y), 11, 2)
 
 
 # Funciones auxiliares
@@ -322,7 +363,8 @@ def intentar_comer_con_prioridad(particulas, posicion_comida):
     - Si hay múltiples verdes, 50-50 entre ellos
     - Si hay múltiples del mismo tipo, 50-50 entre ellos
     """
-    particulas_en_comida = [p for p in particulas if p.x == posicion_comida[0] and p.y == posicion_comida[1] and p.activa and not p.en_casa]
+    # Buscar partículas activas en la posición de comida (sin filtrar por en_casa)
+    particulas_en_comida = [p for p in particulas if p.x == posicion_comida[0] and p.y == posicion_comida[1] and p.activa]
     
     if not particulas_en_comida:
         return None
@@ -444,16 +486,6 @@ def pantalla_configuracion(pantalla, reloj):
             error_txt = fuente_small.render(error_msg, True, ROJO)
             pantalla.blit(error_txt, (ANCHO_VENTANA//2 - error_txt.get_width()//2, 580))
 
-        info_lines = [
-            "ESPACIO pausar (ya en simulación)",
-            "Botón PAUSAR en pantalla de simulación",
-            "Reinicio disponible dentro de la simulación",
-            "Velocidad controlada con barra deslizante"
-        ]
-        for i, ln in enumerate(info_lines):
-            t = fuente_small.render(ln, True, GRIS)
-            pantalla.blit(t, (ANCHO_VENTANA//2 - 220, 680 + i*26))
-
         boton_iniciar.dibujar(pantalla, fuente)
         boton_salir.dibujar(pantalla, fuente)
 
@@ -488,7 +520,7 @@ def simulacion(pantalla, reloj, num_dias, pasos_vida, duracion_dia, porcentaje_c
         part = crear_particulas_iniciales(limites, num_particulas_inicial, pasos_vida)
         food = generar_comida(limites, porcentaje_comida)
         # Retornar: particulas, comida, historial_poblacion, historial_tipos, dia, paso, pausado, velocidad
-        return part, food, [len(part)], [{"normal": len(part), "rojo": 0, "verde": 0}], 1, 0, False, slider_vel.valor
+        return part, food, [len(part)], [{"normal": len(part), "verde": 0, "rojo": 0}], 1, 0, False, slider_vel.valor
 
     particulas, comida_pos, historial_poblacion, historial_tipos, dia_actual, paso_actual_dia, pausado, velocidad = reset_state()
     mostrar_trayectorias = False
@@ -521,36 +553,66 @@ def simulacion(pantalla, reloj, num_dias, pasos_vida, duracion_dia, porcentaje_c
 
         # Simulación del día
         if not pausado and paso_actual_dia < duracion_dia:
+            # Paso 1: Mover todas las partículas
             for particula in particulas:
                 if particula.activa and particula.pasos_restantes > 0:
                     particula.mover(limites)
-
-                    # Regla 9: Intentar comer si hay comida
-                    if not particula.en_casa:
-                        if (particula.x, particula.y) in comida_pos:
-                            # Usar sistema de prioridad de comida
-                            ganador = intentar_comer_con_prioridad(particulas, (particula.x, particula.y))
-                            if ganador == particula:
-                                particula.intentar_comer(comida_pos)
-
-                    # Regla 19: Si regresó a casa y comió, se queda
-                    # Regla 10: Si regresó sin comer pero con pasos, debe salir de nuevo
-                    if particula.en_casa and particula.salio_de_casa:
-                        if particula.ha_comido_hoy:
-                            # Regla 19: Se queda en casa
-                            particula.activa = False
-                            if particula.veces_comido >= 2:
-                                particula.puede_reproducirse = True
-                        elif particula.pasos_restantes > 0:
-                            # Regla 10: Debe salir de nuevo
-                            particula.en_casa = False
-                
+            
+            # Paso 2: Procesar comida SOLO para partículas activas que están fuera de casa
+            # Se construye un mapeo de posición -> lista de partículas
+            pos_a_particulas = {}
+            for pos_comida in comida_pos:
+                pos_a_particulas[pos_comida] = []
+            
+            for particula in particulas:
+                if particula.activa and (particula.x, particula.y) in pos_a_particulas:
+                    pos_a_particulas[(particula.x, particula.y)].append(particula)
+            
+            # Ahora procesar la comida - una partícula por posición de comida
+            comidas_consumidas = set()
+            for pos_comida, particulas_en_pos in pos_a_particulas.items():
+                if particulas_en_pos:  # Si hay partículas en esta posición
+                    # Aplicar reglas de prioridad
+                    verdes = [p for p in particulas_en_pos if p.tipo_mutacion == "mutacion_prioridad"]
+                    rojos = [p for p in particulas_en_pos if p.tipo_mutacion == "mutacion_velocidad"]
+                    blancos = [p for p in particulas_en_pos if p.tipo_mutacion == "normal"]
+                    
+                    # Elegir ganador según prioridad
+                    if verdes:
+                        ganador = random.choice(verdes)
+                    elif rojos:
+                        ganador = random.choice(rojos)
+                    else:
+                        ganador = random.choice(blancos)
+                    
+                    # El ganador come
+                    ganador.veces_comido += 1
+                    ganador.ha_comido_hoy = True
+                    ganador.recargar_stamina()
+                    comidas_consumidas.add(pos_comida)
+            
+            # Eliminar comida consumida del mapa
+            comida_pos -= comidas_consumidas
+            
+            # Paso 3: Manejar muertes por agotamiento y reglas de regreso a casa
+            for particula in particulas:
                 # Regla 5: Si salió de casa y se quedó sin pasos fuera de casa, muere INMEDIATAMENTE
-                elif particula.salio_de_casa and not particula.en_casa and particula.pasos_restantes <= 0:
-                    if particula.activa:
+                if particula.salio_de_casa and not particula.en_casa and particula.pasos_restantes <= 0 and particula.activa:
+                    particula.activa = False
+                    particula.debe_morir = True
+                    anim_muertes.append({"pos": (particula.x, particula.y), "frames": 15})
+                
+                # Regla 19: Si regresó a casa y comió, se queda
+                # Regla 10: Si regresó sin comer pero con pasos, debe salir de nuevo
+                elif particula.en_casa and particula.salio_de_casa and particula.activa:
+                    if particula.ha_comido_hoy:
+                        # Regla 19: Se queda en casa
                         particula.activa = False
-                        particula.debe_morir = True
-                        anim_muertes.append({"pos": (particula.x, particula.y), "frames": 15})
+                        if particula.veces_comido >= 2:
+                            particula.puede_reproducirse = True
+                    elif particula.pasos_restantes > 0:
+                        # Regla 10: Debe salir de nuevo
+                        particula.en_casa = False
 
             paso_actual_dia += 1
 
@@ -572,13 +634,13 @@ def simulacion(pantalla, reloj, num_dias, pasos_vida, duracion_dia, porcentaje_c
                         # Si comió 3+ veces: hijo puede mutar
                         tipo_hijo = particula.obtener_tipo_hijo()
                         
-                        # Si el hijo es mutado, aplicar herencia (75% misma mutación, 25% normal)
+                        # Si el hijo es mutado, aplicar herencia (80% misma mutación, 20% normal)
                         if tipo_hijo in ["mutacion_velocidad", "mutacion_prioridad"]:
                             # El hijo nace con la mutación, luego aplicamos herencia
                             tipo_final = tipo_hijo
                             # Si el padre es mutado, el hijo puede perder la mutación
                             if particula.tipo_mutacion in ["mutacion_velocidad", "mutacion_prioridad"]:
-                                if random.random() >= 0.75:  # 25% de perder mutación
+                                if random.random() >= 0.8:  # 20% de perder mutación
                                     tipo_final = "normal"
                         else:
                             # Tipo normal
@@ -596,7 +658,7 @@ def simulacion(pantalla, reloj, num_dias, pasos_vida, duracion_dia, porcentaje_c
 
             if len(particulas) == 0:
                 historial_poblacion.append(0)
-                historial_tipos.append({"normal": 0, "rojo": 0, "verde": 0})
+                historial_tipos.append({"normal": 0, "verde": 0, "rojo": 0})
                 break
 
             for p in particulas:
@@ -607,9 +669,9 @@ def simulacion(pantalla, reloj, num_dias, pasos_vida, duracion_dia, porcentaje_c
             
             # Registrar cantidad de cada tipo de partícula
             num_normales = len([p for p in particulas if p.tipo_mutacion == "normal"])
-            num_rojos = len([p for p in particulas if p.tipo_mutacion == "mutacion_velocidad"])
-            num_verdes = len([p for p in particulas if p.tipo_mutacion == "mutacion_prioridad"])
-            historial_tipos.append({"normal": num_normales, "rojo": num_rojos, "verde": num_verdes})
+            num_verdes = len([p for p in particulas if p.tipo_mutacion == "mutacion_velocidad"])
+            num_rojos = len([p for p in particulas if p.tipo_mutacion == "mutacion_prioridad"])
+            historial_tipos.append({"normal": num_normales, "verde": num_verdes, "rojo": num_rojos})
             
             dia_actual += 1
             paso_actual_dia = 0
@@ -646,6 +708,23 @@ def simulacion(pantalla, reloj, num_dias, pasos_vida, duracion_dia, porcentaje_c
 
         for particula in particulas:
             particula.dibujar(pantalla, mostrar_trayectorias)
+            
+            # Dibujar barra de stamina encima de la partícula
+            if particula.activa:
+                barra_x = particula.x - 10
+                barra_y = particula.y - 18
+                # Barra de fondo (gris oscuro)
+                pygame.draw.rect(pantalla, GRIS_OSCURO, (barra_x, barra_y, 20, 6))
+                # Barra de stamina (verde -> amarillo -> rojo según stamina)
+                proporcion = particula.stamina / STAMINA_MAXIMA
+                if proporcion > 0.5:
+                    color_stamina = (0, 255 * (1 - proporcion), 255)  # Verde a cian
+                elif proporcion > 0.25:
+                    color_stamina = (255, 255 * proporcion, 0)  # Naranja a amarillo
+                else:
+                    color_stamina = (255, 0, 0)  # Rojo
+                ancho_barra = max(1, int(20 * proporcion))
+                pygame.draw.rect(pantalla, color_stamina, (barra_x, barra_y, ancho_barra, 6))
 
         for anim in list(anim_muertes):
             dibujar_muerte(pantalla, anim["pos"], anim["frames"])
@@ -666,8 +745,8 @@ def simulacion(pantalla, reloj, num_dias, pasos_vida, duracion_dia, porcentaje_c
             f"Pueden reproducirse: {len([p for p in particulas if p.puede_reproducirse])}",
             "",
             f"Normales: {len([p for p in particulas if p.tipo_mutacion == 'normal'])}",
-            f"Rojos: {len([p for p in particulas if p.tipo_mutacion == 'mutacion_velocidad'])}",
-            f"Verdes: {len([p for p in particulas if p.tipo_mutacion == 'mutacion_prioridad'])}",
+            f"Verdes: {len([p for p in particulas if p.tipo_mutacion == 'mutacion_velocidad'])}",
+            f"Rojos: {len([p for p in particulas if p.tipo_mutacion == 'mutacion_prioridad'])}",
             "",
             "CONTROLES",
             "ESPACIO / Botón: Pausa",
@@ -739,8 +818,8 @@ def pantalla_graficas(pantalla, reloj, historial_poblacion, historial_tipos):
     verdes = [h["verde"] for h in historial_tipos]
     
     ax2.plot(dias, normales, marker='o', linewidth=2, markersize=6, color='#FFD700', label='Normales (Dorado)')
-    ax2.plot(dias, rojos, marker='s', linewidth=2, markersize=6, color='#FF0000', label='Mutación Velocidad (Rojo)')
-    ax2.plot(dias, verdes, marker='^', linewidth=2, markersize=6, color='#00FF00', label='Mutación Prioridad (Verde)')
+    ax2.plot(dias, verdes, marker='s', linewidth=2, markersize=6, color='#00FF00', label='Mutación Velocidad (Verde)')
+    ax2.plot(dias, rojos, marker='^', linewidth=2, markersize=6, color='#FF0000', label='Mutación Prioridad (Rojo)')
     ax2.set_xlabel('Día', fontsize=12, color='white')
     ax2.set_ylabel('Cantidad de Partículas', fontsize=12, color='white')
     ax2.set_title('Población por Tipo de Mutación', fontsize=13, fontweight='bold', color='white')
@@ -808,10 +887,6 @@ def pantalla_fin_simulacion(pantalla, reloj, historial_poblacion, historial_tipo
         for i, linea in enumerate(stats_lines):
             texto = fuente_grande.render(linea, True, BLANCO)
             pantalla.blit(texto, (ANCHO_VENTANA//2 - texto.get_width()//2, y_stats + i*50))
-        
-        # Instrucciones
-        instruccion = fuente.render("Presiona el botón para ver las gráficas o salir", True, GRIS)
-        pantalla.blit(instruccion, instruccion.get_rect(center=(ANCHO_VENTANA//2, ALTO_VENTANA//2 - 20)))
         
         boton_graficas.dibujar(pantalla, fuente_grande)
         boton_salir.dibujar(pantalla, fuente_grande)
