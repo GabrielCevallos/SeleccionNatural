@@ -175,10 +175,12 @@ Cuando se termine de usar el proyecto:
 deactivate
 ```
 
-## 👨‍💻 Autor
+## 👨‍💻 Autores
 
-**Gabriel Cevallos**
-- 🔗 GitHub: [@GabrielCevallos](https://github.com/GabrielCevallos)
+- **Gabriel Cevallos** - [@GabrielCevallos](https://github.com/GabrielCevallos)
+- **Francisco Jaramillo** - [@FrancisJaramilloC](https://github.com/FrancisJaramilloC)
+- **Iván Fernández** - [@IvanFernandez02](https://github.com/IvanFernandez02)
+- **José Riofrío** - [@JOSERiofrio2002](https://github.com/JOSERiofrio2002)
 
 ## 📝 Licencia
 
