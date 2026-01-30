@@ -2,6 +2,7 @@ import pygame
 import random
 import sys
 import matplotlib.pyplot as plt
+from matplotlib.ticker import MaxNLocator, FuncFormatter
 
 # Inicializar Pygame
 pygame.init()
@@ -12,15 +13,21 @@ ALTO_VENTANA = 750
 MARGEN = 50
 TAMANO_PASO = 20  # Tamaño de cada paso en píxeles
 PASOS_POR_VIDA = 100  # Número de pasos que puede dar cada partícula
-DURACION_DIA = 300  # Pasos del día (debe ser mucho mayor que PASOS_POR_VIDA)
-PORCENTAJE_COMIDA = 20  # Porcentaje del mapa con comida (valor por defecto de menú)
-PORCENTAJE_PARTICULAS_INICIAL = 10  # Porcentaje de comida que será partículas iniciales (por defecto)
-NUM_DIAS = 30  # Número de días a simular (por defecto)
-TAMANO_CELDA = 20  # Tamaño de cada celda de la cuadrícula
+DURACION_DIA = 300  # Pasos del día (>PASOS_POR_VIDA)
+PORCENTAJE_COMIDA = 20  # Porcentaje del mapa con comida (valor por defecto)
+NUM_DIAS = 30  # Número de días a simular (valor por defecto)
+TAMANO_CELDA = 20  
+
+# Parámetros de DEPREDADORES
+NUM_DEPREDADORES = 5  # Número de depredadores que aparecen en día de purga
+FRECUENCIA_PURGA = 3  # Cada cuántos días aparecen los depredadores
+RADIO_VISION_DEPREDADOR = 5 * 20  # 5 pasos de visión para depredadores (100 píxeles)
+RADIO_VISION_PRESA = 3 * 20  # 3 pasos de visión para presas (60 píxeles)
+VELOCIDAD_DEPREDADOR = 2 
 
 # Parámetros de STAMINA
-STAMINA_MAXIMA = 100  # Stamina máximo
-STAMINA_RECARGA_POR_COMIDA = 60  # Stamina recargado al comer
+STAMINA_MAXIMA = 100 
+STAMINA_RECARGA_POR_COMIDA = 60  
 STAMINA_AGOTAMIENTO = 1.0  # Stamina perdido por paso sin comer
 
 # Colores
@@ -38,6 +45,7 @@ CYAN = (0, 255, 255)
 COLOR_NORMAL = (255, 255, 255)  # Blanco - Tipo normal
 COLOR_MUTACION_VELOCIDAD = (0, 255, 0)  # Verde - Velocidad aumentada
 COLOR_MUTACION_PRIORIDAD = (255, 0, 0)  # Rojo - Prioridad para comer
+COLOR_DEPREDADOR = (139, 0, 139)  # Morado oscuro - Depredador
 
 
 # UI simple
@@ -152,6 +160,12 @@ class Particula:
         # Sistema de STAMINA
         self.stamina = STAMINA_MAXIMA
         self.stamina_anterior = STAMINA_MAXIMA
+        
+        # Sistema de VIDA
+        self.vida_maxima = 2 if tipo_mutacion == "mutacion_prioridad" else 1
+        self.vida_actual = self.vida_maxima
+        self.invulnerable_frames = 0  # Frames de invulnerabilidad tras recibir daño
+        self.huyendo = False  # Estado de huida
     
     def _obtener_color(self):
         """Retorna el color según el tipo de mutación"""
@@ -179,17 +193,77 @@ class Particula:
         """Reduce el stamina por no comer"""
         self.stamina = max(0, self.stamina - cantidad)
         self.actualizar_velocidad_por_stamina()
+    
+    def recibir_dano(self):
+        """Recibe daño de un depredador"""
+        if self.invulnerable_frames > 0:
+            return False  # Aún invulnerable
+        
+        self.vida_actual -= 1
+        self.invulnerable_frames = 30  # 30 frames de invulnerabilidad (~0.5 segundos a 60 FPS)
+        
+        if self.vida_actual <= 0:
+            self.activa = False
+            self.debe_morir = True
+            return True  # Murió
+        return False  # Sobrevivió
+    
+    def actualizar_invulnerabilidad(self):
+        """Actualiza el contador de invulnerabilidad"""
+        if self.invulnerable_frames > 0:
+            self.invulnerable_frames -= 1
+    
+    def detectar_depredador_cercano(self, depredadores):
+        """Detecta si hay un depredador en el radio de visión (3 pasos)"""
+        for depredador in depredadores:
+            if not depredador.activo:
+                continue
+            # Calcular distancia Manhattan (solo direcciones cardinales)
+            distancia_manhattan = abs(self.x - depredador.x) + abs(self.y - depredador.y)
+            if distancia_manhattan <= RADIO_VISION_PRESA:
+                return depredador
+        return None
+    
+    def calcular_vector_huida(self, depredador):
+        """Calcula dirección opuesta al depredador (solo direcciones cardinales)"""
+        dx = self.x - depredador.x
+        dy = self.y - depredador.y
+        
+        # Elegir la dirección cardinal que maximiza la distancia
+        # Priorizar el eje con mayor diferencia
+        if abs(dx) > abs(dy):
+            # Moverse horizontalmente
+            if dx > 0:
+                return TAMANO_PASO, 0  # Derecha (alejarse)
+            else:
+                return -TAMANO_PASO, 0  # Izquierda (alejarse)
+        else:
+            # Moverse verticalmente
+            if dy > 0:
+                return 0, TAMANO_PASO  # Abajo (alejarse)
+            else:
+                return 0, -TAMANO_PASO  # Arriba (alejarse)
         
     def esta_en_borde(self, limites):
         """Verifica si la partícula está en el borde (casa)"""
         return (self.x == limites['izq'] or self.x == limites['der'] or
                 self.y == limites['arr'] or self.y == limites['abaj'])
     
-    def mover(self, limites):
+    def mover(self, limites, depredadores=None):
         """Mueve la partícula; la mutación de velocidad realiza más pasos por tick"""
         if self.pasos_restantes <= 0 or not self.activa:
             return False
 
+        # Actualizar invulnerabilidad
+        self.actualizar_invulnerabilidad()
+        
+        # Detectar depredadores cercanos
+        depredador_cercano = None
+        if depredadores:
+            depredador_cercano = self.detectar_depredador_cercano(depredadores)
+        
+        self.huyendo = depredador_cercano is not None
+        
         direcciones = [
             (TAMANO_PASO, 0),      # Derecha
             (-TAMANO_PASO, 0),     # Izquierda
@@ -207,9 +281,18 @@ class Particula:
             if self.pasos_restantes <= 0 or not self.activa:
                 break
 
-            dx, dy = random.choice(direcciones)
+            # Si hay un depredador cercano, huir
+            if self.huyendo and depredador_cercano:
+                dx, dy = self.calcular_vector_huida(depredador_cercano)
+            else:
+                dx, dy = random.choice(direcciones)
+            
             nuevo_x = max(limites['izq'], min(self.x + dx, limites['der']))
             nuevo_y = max(limites['arr'], min(self.y + dy, limites['abaj']))
+
+            # Alinear al grid
+            nuevo_x = (nuevo_x // TAMANO_PASO) * TAMANO_PASO
+            nuevo_y = (nuevo_y // TAMANO_PASO) * TAMANO_PASO
 
             self.x = nuevo_x
             self.y = nuevo_y
@@ -258,6 +341,10 @@ class Particula:
         # Reiniciar stamina al máximo
         self.stamina = STAMINA_MAXIMA
         self.actualizar_velocidad_por_stamina()
+        # Reiniciar vida al máximo
+        self.vida_actual = self.vida_maxima
+        self.invulnerable_frames = 0
+        self.huyendo = False
     
     def obtener_tipo_hijo(self):
         """Determina el tipo de mutación del hijo basado en veces_comido del padre"""
@@ -286,28 +373,139 @@ class Particula:
         # Dibujar la partícula
         pygame.draw.circle(pantalla, self.color, (self.x, self.y), 7)
         
+        # Si está huyendo, dibujar indicador
+        if self.huyendo:
+            pygame.draw.circle(pantalla, NARANJA, (self.x, self.y), 10, 1)
+        
         # Si está en casa, dibujar un círculo alrededor
         if self.en_casa:
             pygame.draw.circle(pantalla, VERDE, (self.x, self.y), 11, 2)
 
 
+# Clase Depredador
+class Depredador:
+    def __init__(self, x, y):
+        self.x = x
+        self.y = y
+        self.activo = True
+        self.velocidad = VELOCIDAD_DEPREDADOR
+        self.trayectoria = [(self.x, self.y)]
+        self.particulas_eliminadas = 0
+        self.objetivo = None  # Partícula objetivo actual
+    
+    def buscar_objetivo_cercano(self, particulas):
+        """Busca la partícula más cercana dentro del rango de visión (5 pasos)"""
+        particulas_activas = [p for p in particulas if p.activa and not p.en_casa]
+        if not particulas_activas:
+            return None
+        
+        # Encontrar la partícula más cercana dentro del rango de visión
+        min_dist = float('inf')
+        objetivo = None
+        for p in particulas_activas:
+            # Usar distancia Manhattan (solo direcciones cardinales)
+            dist_manhattan = abs(self.x - p.x) + abs(self.y - p.y)
+            if dist_manhattan <= RADIO_VISION_DEPREDADOR and dist_manhattan < min_dist:
+                min_dist = dist_manhattan
+                objetivo = p
+        
+        return objetivo
+    
+    def mover(self, limites, particulas):
+        """Mueve el depredador: random walk por defecto, persigue si detecta presa en rango de 5 pasos"""
+        if not self.activo:
+            return False
+        
+        # Buscar objetivo en el rango de visión
+        self.objetivo = self.buscar_objetivo_cercano(particulas)
+        
+        # Si no hay objetivo en rango, hacer simple random walk
+        if not self.objetivo:
+            direcciones = [
+                (TAMANO_PASO, 0),      # Derecha
+                (-TAMANO_PASO, 0),     # Izquierda
+                (0, TAMANO_PASO),      # Abajo
+                (0, -TAMANO_PASO)      # Arriba
+            ]
+            dx, dy = random.choice(direcciones)
+        else:
+            # Perseguir objetivo - elegir dirección cardinal que acerca más al objetivo
+            dx_diff = self.objetivo.x - self.x
+            dy_diff = self.objetivo.y - self.y
+            
+            # Elegir la dirección cardinal que más acerca al objetivo
+            # Priorizar el eje con mayor diferencia
+            if abs(dx_diff) > abs(dy_diff):
+                # Moverse horizontalmente
+                if dx_diff > 0:
+                    dx, dy = TAMANO_PASO * self.velocidad, 0  # Derecha
+                else:
+                    dx, dy = -TAMANO_PASO * self.velocidad, 0  # Izquierda
+            else:
+                # Moverse verticalmente
+                if dy_diff > 0:
+                    dx, dy = 0, TAMANO_PASO * self.velocidad  # Abajo
+                else:
+                    dx, dy = 0, -TAMANO_PASO * self.velocidad  # Arriba
+        
+        nuevo_x = max(limites['izq'], min(self.x + dx, limites['der']))
+        nuevo_y = max(limites['arr'], min(self.y + dy, limites['abaj']))
+        
+        self.x = nuevo_x
+        self.y = nuevo_y
+        self.trayectoria.append((self.x, self.y))
+        
+        return True
+    
+    def verificar_colision(self, particulas, anim_muertes):
+        """Verifica colisión con partículas y aplica daño"""
+        for particula in particulas:
+            if not particula.activa or particula.en_casa:
+                continue
+            
+            # Calcular distancia
+            distancia = ((self.x - particula.x)**2 + (self.y - particula.y)**2)**0.5
+            
+            # Si están lo suficientemente cerca (radio de colisión)
+            if distancia < 15:  # Radio de colisión
+                murio = particula.recibir_dano()
+                if murio:
+                    self.particulas_eliminadas += 1
+                    anim_muertes.append({"pos": (particula.x, particula.y), "frames": 15})
+                    # Buscar nuevo objetivo
+                    self.objetivo = None
+    
+    def dibujar(self, pantalla, mostrar_trayectoria=True):
+        """Dibuja el depredador como círculo morado con su trayectoria"""
+        if not self.activo:
+            return
+        
+        # Dibujar trayectoria del depredador
+        if mostrar_trayectoria and len(self.trayectoria) > 1:
+            pygame.draw.lines(pantalla, COLOR_DEPREDADOR, False, self.trayectoria, 2)
+        
+        # Dibujar depredador como círculo morado sólido
+        pygame.draw.circle(pantalla, COLOR_DEPREDADOR, (self.x, self.y), 10)
+        pygame.draw.circle(pantalla, BLANCO, (self.x, self.y), 10, 2)
+
+
 # Funciones auxiliares
 def generar_posicion_borde(limites):
-    """Genera una posición aleatoria en el borde (casa)"""
+    """Genera una posición aleatoria en el borde (casa) y retorna con el primer movimiento hacia adentro"""
     borde = random.choice(['izq', 'der', 'arr', 'abaj'])
     
     if borde == 'izq':
-        x = limites['izq']
-        y = random.randrange(limites['arr'], limites['abaj'] + 1, TAMANO_PASO)
+        x = limites['izq'] + TAMANO_PASO  # Primer paso hacia adentro
+        y = (random.randrange(limites['arr'], limites['abaj'] + 1, TAMANO_PASO) // TAMANO_PASO) * TAMANO_PASO
     elif borde == 'der':
-        x = limites['der']
-        y = random.randrange(limites['arr'], limites['abaj'] + 1, TAMANO_PASO)
+        x = limites['der'] - TAMANO_PASO  # Primer paso hacia adentro
+        y = (random.randrange(limites['arr'], limites['abaj'] + 1, TAMANO_PASO) // TAMANO_PASO) * TAMANO_PASO
     elif borde == 'arr':
-        x = random.randrange(limites['izq'], limites['der'] + 1, TAMANO_PASO)
-        y = limites['arr']
+        x = (random.randrange(limites['izq'], limites['der'] + 1, TAMANO_PASO) // TAMANO_PASO) * TAMANO_PASO
+        y = limites['arr'] + TAMANO_PASO  # Primer paso hacia adentro
     else:  # 'abaj'
-        x = random.randrange(limites['izq'], limites['der'] + 1, TAMANO_PASO)
-        y = limites['abaj']
+        x = (random.randrange(limites['izq'], limites['der'] + 1, TAMANO_PASO) // TAMANO_PASO) * TAMANO_PASO
+        y = limites['abaj'] - TAMANO_PASO  # Primer paso hacia adentro
     
     return x, y
 
@@ -359,8 +557,9 @@ def intentar_comer_con_prioridad(particulas, posicion_comida):
     """
     Maneja el sistema de prioridad de comida cuando múltiples partículas llegan a la misma comida.
     Reglas:
-    - Mutación 2 (verde) tiene prioridad sobre normal (blanco) y mutación 1 (rojo)
-    - Si hay múltiples verdes, 50-50 entre ellos
+    - Mutación Rojo (prioridad) tiene prioridad máxima
+    - Mutación Verde (velocidad) tiene prioridad media
+    - Normal (blanco) tiene prioridad mínima
     - Si hay múltiples del mismo tipo, 50-50 entre ellos
     """
     # Buscar partículas activas en la posición de comida (sin filtrar por en_casa)
@@ -370,15 +569,15 @@ def intentar_comer_con_prioridad(particulas, posicion_comida):
         return None
     
     # Separar por tipo
-    verdes = [p for p in particulas_en_comida if p.tipo_mutacion == "mutacion_prioridad"]
-    rojos = [p for p in particulas_en_comida if p.tipo_mutacion == "mutacion_velocidad"]
+    rojos = [p for p in particulas_en_comida if p.tipo_mutacion == "mutacion_prioridad"]
+    verdes = [p for p in particulas_en_comida if p.tipo_mutacion == "mutacion_velocidad"]
     blancos = [p for p in particulas_en_comida if p.tipo_mutacion == "normal"]
     
-    # Prioridad: Verdes > Rojos > Blancos
-    if verdes:
-        return random.choice(verdes)
-    elif rojos:
+    # Prioridad: Rojo (Alta) > Verde (Media) > Blanco (Baja)
+    if rojos:
         return random.choice(rojos)
+    elif verdes:
+        return random.choice(verdes)
     elif blancos:
         return random.choice(blancos)
     
@@ -419,11 +618,13 @@ def pantalla_configuracion(pantalla, reloj):
     fuente = pygame.font.Font(None, 32)
     fuente_small = pygame.font.Font(None, 24)
 
-    campo_dias = CampoTexto((ANCHO_VENTANA//2 + 140, 220, 120, 45), str(NUM_DIAS))
-    campo_duracion = CampoTexto((ANCHO_VENTANA//2 + 140, 290, 120, 45), str(DURACION_DIA))
-    campo_particulas = CampoTexto((ANCHO_VENTANA//2 + 140, 360, 120, 45), "50")
-    campo_comida = CampoTexto((ANCHO_VENTANA//2 + 140, 430, 120, 45), str(PORCENTAJE_COMIDA))
-    campo_pasos = CampoTexto((ANCHO_VENTANA//2 + 140, 500, 120, 45), str(PASOS_POR_VIDA))
+    campo_dias = CampoTexto((ANCHO_VENTANA//2 + 140, 180, 120, 45), str(NUM_DIAS))
+    campo_duracion = CampoTexto((ANCHO_VENTANA//2 + 140, 240, 120, 45), str(DURACION_DIA))
+    campo_particulas = CampoTexto((ANCHO_VENTANA//2 + 140, 300, 120, 45), "50")
+    campo_comida = CampoTexto((ANCHO_VENTANA//2 + 140, 360, 120, 45), str(PORCENTAJE_COMIDA))
+    campo_pasos = CampoTexto((ANCHO_VENTANA//2 + 140, 420, 120, 45), str(PASOS_POR_VIDA))
+    campo_depredadores = CampoTexto((ANCHO_VENTANA//2 + 140, 480, 120, 45), str(NUM_DEPREDADORES))
+    campo_frecuencia = CampoTexto((ANCHO_VENTANA//2 + 140, 540, 120, 45), str(FRECUENCIA_PURGA))
 
     boton_iniciar = Boton((ANCHO_VENTANA//2 - 160, 620, 150, 60), "INICIAR", VERDE, (102, 187, 106))
     boton_salir = Boton((ANCHO_VENTANA//2 + 20, 620, 150, 60), "SALIR", ROJO, (200, 50, 50))
@@ -444,6 +645,8 @@ def pantalla_configuracion(pantalla, reloj):
             campo_particulas.manejar_evento(evento)
             campo_comida.manejar_evento(evento)
             campo_pasos.manejar_evento(evento)
+            campo_depredadores.manejar_evento(evento)
+            campo_frecuencia.manejar_evento(evento)
 
             if evento.type == pygame.MOUSEBUTTONDOWN:
                 if boton_iniciar.click(evento.pos):
@@ -458,28 +661,32 @@ def pantalla_configuracion(pantalla, reloj):
                             "duracion": duracion_val,
                             "particulas": campo_particulas.valor(minimo=1, maximo=2000, defecto=50),
                             "comida": campo_comida.valor(minimo=1, maximo=90, defecto=PORCENTAJE_COMIDA),
-                            "pasos": pasos_val
+                            "pasos": pasos_val,
+                            "depredadores": campo_depredadores.valor(minimo=0, maximo=50, defecto=NUM_DEPREDADORES),
+                            "frecuencia_purga": campo_frecuencia.valor(minimo=0, maximo=100, defecto=FRECUENCIA_PURGA)
                         }
                 if boton_salir.click(evento.pos):
                     pygame.quit()
                     sys.exit()
 
         pantalla.fill(NEGRO)
-        titulo = fuente_titulo.render("Configurar Simulación", True, AZUL_BOTON)
+        titulo = fuente_titulo.render("Configuración", True, AZUL_BOTON)
         pantalla.blit(titulo, titulo.get_rect(center=(ANCHO_VENTANA//2, 120)))
 
         labels = [
             "Número de días",
             "Duración del día (pasos)",
             "Partículas iniciales",
-            "% de comida en mapa",
+            "Comida en el mapa (%)",
             "Pasos por vida",
+            "Depredadores por purga",
+            "Frecuencia de purga",
         ]
-        campos = [campo_dias, campo_duracion, campo_particulas, campo_comida, campo_pasos]
-        y_base = 220
+        campos = [campo_dias, campo_duracion, campo_particulas, campo_comida, campo_pasos, campo_depredadores, campo_frecuencia]
+        y_base = 180
         for i, (lbl, campo) in enumerate(zip(labels, campos)):
             texto = fuente.render(lbl + ":", True, BLANCO)
-            pantalla.blit(texto, (ANCHO_VENTANA//2 - 260, y_base + i*70))
+            pantalla.blit(texto, (ANCHO_VENTANA//2 - 300, y_base + i*60))
             campo.dibujar(pantalla, fuente)
 
         if error_msg:
@@ -493,8 +700,8 @@ def pantalla_configuracion(pantalla, reloj):
         reloj.tick(60)
 
 
-def simulacion(pantalla, reloj, num_dias, pasos_vida, duracion_dia, porcentaje_comida, num_particulas_inicial):
-    """Ejecuta la simulación de selección natural por varios días"""
+def simulacion(pantalla, reloj, num_dias, pasos_vida, duracion_dia, porcentaje_comida, num_particulas_inicial, num_depredadores=5, frecuencia_purga=3):
+    """Ejecuta la simulación de selección natural por varios días con sistema de depredadores"""
     fuente_grande = pygame.font.Font(None, 40)
     fuente = pygame.font.Font(None, 28)
     fuente_pequena = pygame.font.Font(None, 22)
@@ -502,29 +709,35 @@ def simulacion(pantalla, reloj, num_dias, pasos_vida, duracion_dia, porcentaje_c
     # Garantizar que la duración del día siempre sea mayor a los pasos de vida
     duracion_dia = max(duracion_dia, pasos_vida + 1)
 
-    # Definir límites del mundo
+    # Definir límites del mundo (alineados al grid)
     limites = {
-        'izq': MARGEN,
-        'der': ANCHO_VENTANA - MARGEN - 300,  # Espacio para panel lateral
-        'arr': MARGEN + 100,
-        'abaj': ALTO_VENTANA - MARGEN
+        'izq': (MARGEN // TAMANO_PASO) * TAMANO_PASO,
+        'der': ((ANCHO_VENTANA - MARGEN - 300) // TAMANO_PASO) * TAMANO_PASO,
+        'arr': ((MARGEN + 100) // TAMANO_PASO) * TAMANO_PASO,
+        'abaj': ((ALTO_VENTANA - MARGEN) // TAMANO_PASO) * TAMANO_PASO
     }
 
     # Botones y slider
-    boton_pausa = Boton((ANCHO_VENTANA - 260, 20, 70, 40), "PAUSA", AZUL_BOTON, (90, 190, 255))
-    boton_reiniciar = Boton((ANCHO_VENTANA - 180, 20, 80, 40), "RESET", NARANJA, (255, 140, 60))
-    boton_menu = Boton((ANCHO_VENTANA - 90, 20, 60, 40), "MENU", ROJO, (200, 50, 50))
-    slider_vel = Slider(ANCHO_VENTANA - 260, 70, 210, 5, 120, 30)
+    boton_pausa = Boton((ANCHO_VENTANA - 275, 20, 85, 45), "PAUSA", AZUL_BOTON, (90, 190, 255))
+    boton_reiniciar = Boton((ANCHO_VENTANA - 180, 20, 90, 45), "RESET", NARANJA, (255, 140, 60))
+    boton_menu = Boton((ANCHO_VENTANA - 80, 20, 70, 45), "MENU", ROJO, (200, 50, 50))
+    slider_vel = Slider(ANCHO_VENTANA - 260, 72, 210, 5, 120, 30)
 
     def reset_state():
         part = crear_particulas_iniciales(limites, num_particulas_inicial, pasos_vida)
         food = generar_comida(limites, porcentaje_comida)
-        # Retornar: particulas, comida, historial_poblacion, historial_tipos, dia, paso, pausado, velocidad
-        return part, food, [len(part)], [{"normal": len(part), "verde": 0, "rojo": 0}], 1, 0, False, slider_vel.valor
+        # Historial de depredadores: {dia, num_depredadores, particulas_eliminadas}
+        hist_depredadores = []
+        historial_estadisticas = []
+        # Retornar: particulas, comida, historial_poblacion, historial_tipos, historial_depredadores, historial_estadisticas, dia, paso, pausado, velocidad
+        return part, food, [len(part)], [{"normal": len(part), "verde": 0, "rojo": 0}], hist_depredadores, historial_estadisticas, 1, 0, False, slider_vel.valor
 
-    particulas, comida_pos, historial_poblacion, historial_tipos, dia_actual, paso_actual_dia, pausado, velocidad = reset_state()
+    particulas, comida_pos, historial_poblacion, historial_tipos, historial_depredadores, historial_estadisticas, dia_actual, paso_actual_dia, pausado, velocidad = reset_state()
+    comida_inicial_dia = len(comida_pos)
     mostrar_trayectorias = False
     anim_muertes = []  # lista de {'pos': (x,y), 'frames': n}
+    depredadores = []  # Lista de depredadores activos
+    es_dia_purga = False
 
     corriendo = True
     while corriendo and dia_actual <= num_dias:
@@ -544,19 +757,39 @@ def simulacion(pantalla, reloj, num_dias, pasos_vida, duracion_dia, porcentaje_c
                 if boton_pausa.click(evento.pos):
                     pausado = not pausado
                 if boton_reiniciar.click(evento.pos):
-                    particulas, comida_pos, historial_poblacion, historial_tipos, dia_actual, paso_actual_dia, pausado, velocidad = reset_state()
+                    particulas, comida_pos, historial_poblacion, historial_tipos, historial_depredadores, dia_actual, paso_actual_dia, pausado, velocidad = reset_state()
                     anim_muertes.clear()
+                    depredadores.clear()
+                    es_dia_purga = False
                 if boton_menu.click(evento.pos):
-                    return None, None
+                    return None, None, None, None
 
         velocidad = slider_vel.valor
 
         # Simulación del día
         if not pausado and paso_actual_dia < duracion_dia:
-            # Paso 1: Mover todas las partículas
+            # Verificar si es día de purga y spawner depredadores
+            if paso_actual_dia == 0 and frecuencia_purga > 0 and dia_actual % frecuencia_purga == 0:
+                es_dia_purga = True
+                depredadores.clear()
+                for _ in range(num_depredadores):
+                    x, y = generar_posicion_borde(limites)
+                    depredador = Depredador(x, y)
+                    depredadores.append(depredador)
+            # Registrar comida inicial del día al primer paso
+            if paso_actual_dia == 0:
+                comida_inicial_dia = len(comida_pos)
+            
+            # Paso 1: Mover todas las partículas (con evasión de depredadores)
             for particula in particulas:
                 if particula.activa and particula.pasos_restantes > 0:
-                    particula.mover(limites)
+                    particula.mover(limites, depredadores if es_dia_purga else None)
+            
+            # Paso 1.5: Mover depredadores y verificar colisiones
+            if es_dia_purga:
+                for depredador in depredadores:
+                    depredador.mover(limites, particulas)
+                    depredador.verificar_colision(particulas, anim_muertes)
             
             # Paso 2: Procesar comida SOLO para partículas activas que están fuera de casa
             # Se construye un mapeo de posición -> lista de partículas
@@ -618,6 +851,39 @@ def simulacion(pantalla, reloj, num_dias, pasos_vida, duracion_dia, porcentaje_c
 
         # Fin de día
         if paso_actual_dia >= duracion_dia and not pausado:
+            # Registrar estadísticas del día
+            historial_estadisticas.append({
+                "dia": dia_actual,
+                "poblacion_total": len(particulas),
+                "comida": comida_inicial_dia,
+                "vivas": len([p for p in particulas if p.activa]),
+                "en_casa": len([p for p in particulas if p.en_casa]),
+                "comieron": len([p for p in particulas if p.ha_comido_hoy]),
+                "pueden_reproducirse": len([p for p in particulas if p.puede_reproducirse]),
+                "normales": len([p for p in particulas if p.tipo_mutacion == "normal"]),
+                "verdes": len([p for p in particulas if p.tipo_mutacion == "mutacion_velocidad"]),
+                "rojos": len([p for p in particulas if p.tipo_mutacion == "mutacion_prioridad"]),
+                "depredadores": len(depredadores) if es_dia_purga else 0
+            })
+            # Registrar estadísticas de depredadores si fue día de purga
+            if es_dia_purga:
+                vel_elim = sum(1 for p in particulas if not p.activa and p.debe_morir and p.tipo_mutacion == "mutacion_velocidad")
+                pri_elim = sum(1 for p in particulas if not p.activa and p.debe_morir and p.tipo_mutacion == "mutacion_prioridad")
+                nor_elim = sum(1 for p in particulas if not p.activa and p.debe_morir and p.tipo_mutacion == "normal")
+                total_eliminadas = vel_elim + pri_elim + nor_elim
+                
+                historial_depredadores.append({
+                    "dia": dia_actual,
+                    "num_depredadores": len(depredadores),
+                    "particulas_eliminadas": total_eliminadas,
+                    "velocidad_eliminadas": vel_elim,
+                    "prioridad_eliminadas": pri_elim,
+                    "normal_eliminadas": nor_elim
+                })
+                # Eliminar depredadores al final del día
+                depredadores.clear()
+                es_dia_purga = False
+            
             sobrevivientes = []
             nuevas_particulas = []
 
@@ -665,6 +931,7 @@ def simulacion(pantalla, reloj, num_dias, pasos_vida, duracion_dia, porcentaje_c
                 p.reiniciar_dia(limites)
 
             comida_pos = generar_comida(limites, porcentaje_comida)
+            comida_inicial_dia = len(comida_pos)
             historial_poblacion.append(len(particulas))
             
             # Registrar cantidad de cada tipo de partícula
@@ -682,17 +949,20 @@ def simulacion(pantalla, reloj, num_dias, pasos_vida, duracion_dia, porcentaje_c
         pygame.draw.rect(pantalla, GRIS_OSCURO, (0, 0, ANCHO_VENTANA, 100))
         pygame.draw.line(pantalla, BLANCO, (0, 100), (ANCHO_VENTANA, 100), 2)
 
-        texto_dia = fuente_grande.render(f"DÍA {dia_actual}/{num_dias}", True, CYAN)
+        titulo_dia = f"DÍA {dia_actual}/{num_dias}"
+        if es_dia_purga:
+            titulo_dia += " - PURGA"
+        texto_dia = fuente_grande.render(titulo_dia, True, AZUL_BOTON if not es_dia_purga else ROJO)
         pantalla.blit(texto_dia, (20, 20))
 
-        texto_poblacion = fuente_grande.render(f"Población: {len(particulas)}", True, VERDE)
+        texto_poblacion = fuente.render(f"Población: {len(particulas)}", True, BLANCO)
         pantalla.blit(texto_poblacion, (320, 20))
 
-        texto_comida = fuente.render(f"Comida: {len(comida_pos)}", True, AMARILLO)
+        texto_comida = fuente.render(f"Comida: {len(comida_pos)}", True, BLANCO)
         pantalla.blit(texto_comida, (320, 60))
 
         if pausado:
-            texto_pausa = fuente.render("⏸ PAUSADO", True, ROJO)
+            texto_pausa = fuente.render("PAUSADO", True, ROJO)
             pantalla.blit(texto_pausa, (ANCHO_VENTANA - 450, 30))
 
         boton_pausa.dibujar(pantalla, fuente)
@@ -706,7 +976,13 @@ def simulacion(pantalla, reloj, num_dias, pasos_vida, duracion_dia, porcentaje_c
         dibujar_paredes(pantalla, limites)
         dibujar_comida(pantalla, comida_pos)
 
+        # Dibujar depredadores con trayectoria
+        for depredador in depredadores:
+            depredador.dibujar(pantalla, mostrar_trayectorias)
+        
         for particula in particulas:
+            if particula.debe_morir:
+                continue
             particula.dibujar(pantalla, mostrar_trayectorias)
             
             # Dibujar barra de stamina encima de la partícula
@@ -744,33 +1020,33 @@ def simulacion(pantalla, reloj, num_dias, pasos_vida, duracion_dia, porcentaje_c
             f"Comieron hoy: {len([p for p in particulas if p.ha_comido_hoy])}",
             f"Pueden reproducirse: {len([p for p in particulas if p.puede_reproducirse])}",
             "",
+            "PARTÍCULAS",
             f"Normales: {len([p for p in particulas if p.tipo_mutacion == 'normal'])}",
             f"Verdes: {len([p for p in particulas if p.tipo_mutacion == 'mutacion_velocidad'])}",
             f"Rojos: {len([p for p in particulas if p.tipo_mutacion == 'mutacion_prioridad'])}",
+            f"Depredadores: {len(depredadores)}",
             "",
             "CONTROLES",
             "ESPACIO / Botón: Pausa",
             "T: Trayectorias",
-            "ESC: Salir",
-            "",
-            "Reiniciar: Botón"
+            "ESC: Salir"
         ]
 
         for i, linea in enumerate(lineas_panel):
-            if i == 0 or i == 6:
-                color = CYAN
+            if i == 0 or i == 6 or i == 12:
+                color = AZUL_BOTON
                 fuente_usar = fuente
             else:
                 color = BLANCO
                 fuente_usar = fuente_pequena
 
             texto = fuente_usar.render(linea, True, color)
-            pantalla.blit(texto, (panel_x + 10, y_pos + i * 30))
+            pantalla.blit(texto, (panel_x + 10, y_pos + i * 28))
 
         pygame.display.flip()
         reloj.tick(velocidad)
 
-    return historial_poblacion, historial_tipos
+    return historial_poblacion, historial_tipos, historial_depredadores, historial_estadisticas
 
 
 def mostrar_grafica_poblacion(historial_poblacion):
@@ -789,7 +1065,7 @@ def mostrar_grafica_poblacion(historial_poblacion):
     plt.show()
 
 
-def pantalla_graficas(pantalla, reloj, historial_poblacion, historial_tipos):
+def pantalla_graficas(pantalla, reloj, historial_poblacion, historial_tipos, historial_depredadores):
     """Pantalla interactiva para mostrar las gráficas con botón para volver"""
     fuente_titulo = pygame.font.Font(None, 48)
     fuente = pygame.font.Font(None, 28)
@@ -797,9 +1073,16 @@ def pantalla_graficas(pantalla, reloj, historial_poblacion, historial_tipos):
     boton_volver = Boton((ANCHO_VENTANA//2 - 75, ALTO_VENTANA - 80, 150, 60), "VOLVER", AZUL_BOTON, (90, 190, 255))
     
     # Crear las figuras de matplotlib
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6), facecolor='#1a1a1a')
+    fig = plt.figure(figsize=(16, 10), facecolor='#1a1a1a')
+    ax1 = plt.subplot(2, 2, 1)
+    ax2 = plt.subplot(2, 2, 2)
+    ax3 = plt.subplot(2, 2, 3)
+    ax4 = plt.subplot(2, 2, 4)
+    
     ax1.set_facecolor('#2d2d2d')
     ax2.set_facecolor('#2d2d2d')
+    ax3.set_facecolor('#2d2d2d')
+    ax4.set_facecolor('#2d2d2d')
     
     # Gráfica 1: Evolución total de la población
     ax1.plot(range(len(historial_poblacion)), historial_poblacion, marker='o', 
@@ -827,6 +1110,54 @@ def pantalla_graficas(pantalla, reloj, historial_poblacion, historial_tipos):
     ax2.tick_params(colors='white')
     ax2.legend(facecolor='#2d2d2d', edgecolor='white', labelcolor='white')
     
+    # Gráfica 3: Partículas eliminadas por depredadores por día
+    if historial_depredadores:
+        dias_purga = [h["dia"] for h in historial_depredadores]
+        eliminadas = [int(h["particulas_eliminadas"]) for h in historial_depredadores]
+        
+        ax3.bar(dias_purga, eliminadas, color='#8B008B', alpha=0.7, label='Partículas Eliminadas')
+        ax3.set_xlabel('Día de Purga', fontsize=12, color='white')
+        ax3.set_ylabel('Partículas Eliminadas', fontsize=12, color='white')
+        ax3.set_title('Impacto de Depredadores por Día de Purga', fontsize=13, fontweight='bold', color='white')
+        ax3.grid(True, alpha=0.3, color='white', axis='y')
+        ax3.yaxis.set_major_locator(MaxNLocator(integer=True))
+        ax3.yaxis.set_major_formatter(FuncFormatter(lambda x, _: f"{int(x)}"))
+        ax3.tick_params(colors='white')
+        ax3.legend(facecolor='#2d2d2d', edgecolor='white', labelcolor='white')
+    else:
+        ax3.text(0.5, 0.5, 'No hubo días de purga', ha='center', va='center', 
+                fontsize=14, color='white', transform=ax3.transAxes)
+        ax3.set_title('Impacto de Depredadores', fontsize=13, fontweight='bold', color='white')
+    
+    # Gráfica 4: Desglose de tipos eliminados por depredadores
+    if historial_depredadores:
+        dias_purga = [h["dia"] for h in historial_depredadores]
+        vel_elim = [int(h.get("velocidad_eliminadas", 0)) for h in historial_depredadores]
+        pri_elim = [int(h.get("prioridad_eliminadas", 0)) for h in historial_depredadores]
+        nor_elim = [int(h.get("normal_eliminadas", 0)) for h in historial_depredadores]
+        
+        width = 0.25
+        x = range(len(dias_purga))
+        
+        ax4.bar([i - width for i in x], nor_elim, width, label='Normales', color='#FFD700', alpha=0.7)
+        ax4.bar(x, vel_elim, width, label='Velocidad', color='#00FF00', alpha=0.7)
+        ax4.bar([i + width for i in x], pri_elim, width, label='Prioridad', color='#FF0000', alpha=0.7)
+        
+        ax4.set_xlabel('Día de Purga', fontsize=12, color='white')
+        ax4.set_ylabel('Cantidad Eliminada', fontsize=12, color='white')
+        ax4.set_title('Tipos de Partículas Eliminadas por Depredadores', fontsize=13, fontweight='bold', color='white')
+        ax4.set_xticks(x)
+        ax4.set_xticklabels(dias_purga)
+        ax4.grid(True, alpha=0.3, color='white', axis='y')
+        ax4.yaxis.set_major_locator(MaxNLocator(integer=True))
+        ax4.yaxis.set_major_formatter(FuncFormatter(lambda x, _: f"{int(x)}"))
+        ax4.tick_params(colors='white')
+        ax4.legend(facecolor='#2d2d2d', edgecolor='white', labelcolor='white')
+    else:
+        ax4.text(0.5, 0.5, 'No hubo días de purga', ha='center', va='center', 
+                fontsize=14, color='white', transform=ax4.transAxes)
+        ax4.set_title('Tipos Eliminados por Depredadores', fontsize=13, fontweight='bold', color='white')
+    
     # Ajustar diseño
     plt.tight_layout()
     
@@ -834,14 +1165,149 @@ def pantalla_graficas(pantalla, reloj, historial_poblacion, historial_tipos):
     plt.show()
 
 
-def pantalla_fin_simulacion(pantalla, reloj, historial_poblacion, historial_tipos):
+def mostrar_tabla_historico(historial_estadisticas):
+    """Muestra la tabla de histórico diario"""
+    fig = plt.figure(figsize=(16, 10), facecolor='#1a1a1a')
+    ax = fig.add_subplot(111)
+    ax.axis('off')
+
+    data_unificada = [[
+        'Día', 'Población Total', 'En casa', 'Comieron',
+        'Pueden Reproducirse', 'Normales', 'Verdes', 'Rojos', 'Depredadores'
+    ]]
+
+    for estad in historial_estadisticas:
+        data_unificada.append([
+            str(estad['dia']),
+            str(estad['poblacion_total']),
+            str(estad['en_casa']),
+            str(estad['comieron']),
+            str(estad['pueden_reproducirse']),
+            str(estad['normales']),
+            str(estad['verdes']),
+            str(estad['rojos']),
+            str(estad['depredadores'])
+        ])
+
+    table = ax.table(cellText=data_unificada, cellLoc='center', loc='center',
+                     colWidths=[0.05, 0.12, 0.08, 0.08, 0.14, 0.08, 0.07, 0.07, 0.1],
+                     bbox=[0, 0, 1, 0.9])
+    table.auto_set_font_size(False)
+    table.set_fontsize(8)
+    table.scale(1, 2.2)
+
+    for i in range(len(data_unificada)):
+        for j in range(len(data_unificada[0])):
+            cell = table[(i, j)]
+            if i == 0:
+                cell.set_facecolor('#1a8cff')
+                cell.set_text_props(weight='bold', color='white')
+            else:
+                cell.set_facecolor('#2d2d2d' if i % 2 == 0 else '#3a3a3a')
+                cell.set_text_props(color='white')
+
+    ax.set_title('Histórico', fontsize=14, fontweight='bold', color='white', pad=30)
+    plt.tight_layout()
+    plt.show()
+
+
+def mostrar_tabla_depredadores(historial_depredadores):
+    """Muestra la tabla de impacto de depredadores"""
+    fig = plt.figure(figsize=(12, 8), facecolor='#1a1a1a')
+    ax = fig.add_subplot(111)
+    ax.axis('off')
+
+    if historial_depredadores:
+        data_depredadores = [['Día Purga', 'Eliminadas', 'Normales', 'Verdes', 'Rojos']]
+        for dep in historial_depredadores:
+            data_depredadores.append([
+                str(dep['dia']),
+                str(dep['particulas_eliminadas']),
+                str(dep.get('normal_eliminadas', 0)),
+                str(dep.get('velocidad_eliminadas', 0)),
+                str(dep.get('prioridad_eliminadas', 0))
+            ])
+
+        table = ax.table(cellText=data_depredadores, cellLoc='center', loc='center',
+                         colWidths=[0.18, 0.22, 0.2, 0.2, 0.2], bbox=[0, 0, 1, 0.85])
+        table.auto_set_font_size(False)
+        table.set_fontsize(9)
+        table.scale(1, 2.0)
+
+        for i in range(len(data_depredadores)):
+            for j in range(len(data_depredadores[0])):
+                cell = table[(i, j)]
+                if i == 0:
+                    cell.set_facecolor('#1a8cff')
+                    cell.set_text_props(weight='bold', color='white')
+                else:
+                    cell.set_facecolor('#2d2d2d' if i % 2 == 0 else '#3a3a3a')
+                    cell.set_text_props(color='white')
+    else:
+        ax.text(0.5, 0.5, 'No hubo días de purga', ha='center', va='center',
+                fontsize=14, color='white', transform=ax.transAxes)
+
+    ax.set_title('Impacto de Depredadores', fontsize=14, fontweight='bold', color='white', pad=30)
+    plt.tight_layout()
+    plt.show()
+
+
+def mostrar_tabla_resumen(historial_poblacion, historial_depredadores, historial_estadisticas, config):
+    """Muestra la tabla de resumen de simulación"""
+    fig = plt.figure(figsize=(10, 10), facecolor='#1a1a1a')
+    ax = fig.add_subplot(111)
+    ax.axis('off')
+
+    data_resumen = [
+        ['Métrica', 'Valor'],
+        ['Población Inicial', str(historial_poblacion[0])],
+        ['Población Final', str(historial_poblacion[-1])],
+        ['Población Máxima', str(max(historial_poblacion))],
+        ['Población Mínima', str(min(historial_poblacion))],
+        ['Días de Purga', str(len(historial_depredadores))],
+        ['Depredadores por Purga', str(config['depredadores'])],
+        ['Frecuencia de Purga', str(config['frecuencia_purga'])],
+        ['Comida (%)', str(config['comida'])],
+        ['Total de Días', str(len(historial_estadisticas))]
+    ]
+
+    table = ax.table(cellText=data_resumen, cellLoc='center', loc='center',
+                     colWidths=[0.55, 0.35], bbox=[0, 0, 1, 0.9])
+    table.auto_set_font_size(False)
+    table.set_fontsize(11)
+    table.scale(1, 2.2)
+
+    for i in range(len(data_resumen)):
+        for j in range(len(data_resumen[0])):
+            cell = table[(i, j)]
+            if i == 0:
+                cell.set_facecolor('#1a8cff')
+                cell.set_text_props(weight='bold', color='white')
+            else:
+                cell.set_facecolor('#2d2d2d' if i % 2 == 0 else '#3a3a3a')
+                cell.set_text_props(color='white')
+
+    ax.set_title('Resumen de Simulación', fontsize=14, fontweight='bold', color='white', pad=30)
+    plt.tight_layout()
+    plt.show()
+
+
+def pantalla_tablas_historico(pantalla, reloj, historial_poblacion, historial_tipos, historial_depredadores, historial_estadisticas, config):
+    """Abre las tablas en ventanas separadas"""
+    mostrar_tabla_historico(historial_estadisticas)
+    mostrar_tabla_depredadores(historial_depredadores)
+    mostrar_tabla_resumen(historial_poblacion, historial_depredadores, historial_estadisticas, config)
+
+
+def pantalla_fin_simulacion(pantalla, reloj, historial_poblacion, historial_tipos, historial_depredadores, historial_estadisticas, config):
     """Pantalla final con botón para ver gráficas"""
     fuente_titulo = pygame.font.Font(None, 56)
-    fuente_grande = pygame.font.Font(None, 40)
     fuente = pygame.font.Font(None, 28)
     
-    boton_graficas = Boton((ANCHO_VENTANA//2 - 100, ALTO_VENTANA//2 + 50, 200, 70), "VER GRÁFICAS", VERDE, (102, 187, 106))
-    boton_salir = Boton((ANCHO_VENTANA//2 - 100, ALTO_VENTANA//2 + 150, 200, 70), "SALIR", ROJO, (200, 50, 50))
+    boton_graficas = Boton((ANCHO_VENTANA//2 - 90, ALTO_VENTANA//2 - 120, 180, 50), "VER GRÁFICAS", AZUL_BOTON, (102, 187, 106))
+    boton_tablas = Boton((ANCHO_VENTANA//2 - 90, ALTO_VENTANA//2 - 50, 180, 50), "VER TABLAS", AZUL_BOTON, (90, 190, 255))
+    boton_menu = Boton((ANCHO_VENTANA//2 - 90, ALTO_VENTANA//2 + 20, 180, 50), "MENU", AZUL_BOTON, (90, 190, 255))
+    boton_salir = Boton((ANCHO_VENTANA//2 - 90, ALTO_VENTANA//2 + 90, 180, 50), "SALIR", ROJO, (200, 50, 50))
     
     corriendo = True
     while corriendo:
@@ -855,18 +1321,13 @@ def pantalla_fin_simulacion(pantalla, reloj, historial_poblacion, historial_tipo
             
             if evento.type == pygame.MOUSEBUTTONDOWN:
                 if boton_graficas.click(evento.pos):
-                    pantalla_graficas(pantalla, reloj, historial_poblacion, historial_tipos)
+                    pantalla_graficas(pantalla, reloj, historial_poblacion, historial_tipos, historial_depredadores)
+                if boton_tablas.click(evento.pos):
+                    pantalla_tablas_historico(pantalla, reloj, historial_poblacion, historial_tipos, historial_depredadores, historial_estadisticas, config)
+                if boton_menu.click(evento.pos):
+                    return "menu"
                 if boton_salir.click(evento.pos):
                     pygame.quit()
-                    
-                    # Mostrar resumen en consola
-                    print("\n=== RESULTADOS DE LA SIMULACIÓN ===")
-                    print(f"Población inicial: {historial_poblacion[0]}")
-                    print(f"Población final: {historial_poblacion[-1]}")
-                    print(f"Población máxima: {max(historial_poblacion)}")
-                    print(f"Población mínima: {min(historial_poblacion)}")
-                    print("=\n")
-                    
                     sys.exit()
         
         pantalla.fill(NEGRO)
@@ -875,24 +1336,15 @@ def pantalla_fin_simulacion(pantalla, reloj, historial_poblacion, historial_tipo
         titulo = fuente_titulo.render("Simulación Completada", True, CYAN)
         pantalla.blit(titulo, titulo.get_rect(center=(ANCHO_VENTANA//2, 80)))
         
-        # Estadísticas finales
-        y_stats = 200
-        stats_lines = [
-            f"Población inicial: {historial_poblacion[0]}",
-            f"Población final: {historial_poblacion[-1]}",
-            f"Población máxima: {max(historial_poblacion)}",
-            f"Población mínima: {min(historial_poblacion)}"
-        ]
-        
-        for i, linea in enumerate(stats_lines):
-            texto = fuente_grande.render(linea, True, BLANCO)
-            pantalla.blit(texto, (ANCHO_VENTANA//2 - texto.get_width()//2, y_stats + i*50))
-        
-        boton_graficas.dibujar(pantalla, fuente_grande)
-        boton_salir.dibujar(pantalla, fuente_grande)
+        boton_graficas.dibujar(pantalla, fuente)
+        boton_tablas.dibujar(pantalla, fuente)
+        boton_menu.dibujar(pantalla, fuente)
+        boton_salir.dibujar(pantalla, fuente)
         
         pygame.display.flip()
         reloj.tick(60)
+
+    return None
 
 
 def main():
@@ -913,17 +1365,21 @@ def main():
             config["duracion"],
             config["comida"],
             config["particulas"],
+            config["depredadores"],
+            config["frecuencia_purga"]
         )
         
-        # Si resultado es (None, None), el usuario quiere volver al menú
-        if resultado == (None, None):
+        # Si resultado es (None, None, None), el usuario quiere volver al menú
+        if resultado == (None, None, None, None):
             continue
         
         # Si llegamos aquí, la simulación terminó naturalmente
-        historial_poblacion, historial_tipos = resultado
+        historial_poblacion, historial_tipos, historial_depredadores, historial_estadisticas = resultado
         
         # Mostrar pantalla final con opciones
-        pantalla_fin_simulacion(pantalla, reloj, historial_poblacion, historial_tipos)
+        resultado_fin = pantalla_fin_simulacion(pantalla, reloj, historial_poblacion, historial_tipos, historial_depredadores, historial_estadisticas, config)
+        if resultado_fin == "menu":
+            continue
         break
 
 
